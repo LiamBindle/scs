@@ -1,6 +1,7 @@
+import os.path
 import numpy as np
-from gcpy.grid.horiz import csgrid_GMAO
-
+from gcpy.grid.horiz import csgrid_GMAO, make_grid_LL
+import xesmf as xe
 
 def rotate_vectors(x, y, z, k, theta):
     x = np.atleast_1d(x)
@@ -82,8 +83,47 @@ def make_grid_SCS(csres: int, stretch_factor: float, target_lat: float, target_l
                           'lon_b': lon_b}
     return [csgrid, csgrid_list]
 
+def make_regridder_L2S(llres_in, csres_out, stretch_factor, target_lat, target_lon, weightsdir='.', reuse_weights=False):
+    csgrid, csgrid_list = make_grid_SCS(csres_out, stretch_factor, target_lat, target_lon)
+    llgrid = make_grid_LL(llres_in)
+    regridder_list = []
+    for i in range(6):
+        weightsfile = os.path.join(weightsdir, 'conservative_{}_s{}_{}.nc'.format(llres_in, str(csres_out), str(i)))
+        regridder = xe.Regridder(llgrid, csgrid_list[i], method='conservative', filename=weightsfile, reuse_weights=reuse_weights)
+        regridder_list.append(regridder)
+    return regridder_list
+
 
 if __name__ == '__main__':
+    # import matplotlib.pyplot as plt
+    # import cartopy.crs as ccrs
+    # import plotting.cs
+    # csgrid, csgrid_list = make_grid_SCS(24, 1.8, 40, 265)
+    # plt.figure()
+    # proj = ccrs.PlateCarree()
+    # ax = plt.axes(projection=proj)
+    # ax.stock_img()
+    # ax.set_global()
+    # ax.coastlines(linewidth=0.6, alpha=0.5)
+    # for i in range(6):
+    #     plotting.cs.plot_gridboxes(csgrid_list[i]['lon_b'],csgrid_list[i]['lat_b'], ax, proj)
+    #     plotting.cs.plot_facenumber(csgrid_list[i]['lon_b'],csgrid_list[i]['lat_b'], i+1, ax, proj)
+    # plt.tight_layout()
+    # plt.show()
+    # print('Done')
+
+    import xarray as xr
+    ds_in = xr.open_dataset('initial_GEOSChem_rst.2x25_TransportTracers.nc')
+    csres = 24
+    regridders = make_regridder_L2S('2x2.5', csres, 1.8, 40, 265)
+
+    # ds = xr.Dataset(coords={
+    #     'lat':np.arange(1, csres*6+1, dtype=np.float32),
+    #     'lon':np.arange(1, csres+1, dtype=np.float32),
+    #     'lev': ds_in['lev'],
+    #     'time': ds_in['time']}
+    # )
+
     import matplotlib.pyplot as plt
     import cartopy.crs as ccrs
     import plotting.cs
@@ -94,12 +134,31 @@ if __name__ == '__main__':
     ax.stock_img()
     ax.set_global()
     ax.coastlines(linewidth=0.6, alpha=0.5)
+
+    ds = xr.Dataset()
+    for var in ds_in.data_vars:
+        dr = [regridder(ds_in[var]) for regridder in regridders]
+        dr = xr.concat(dr, 'face')
+        dr = dr.transpose('time', 'lev', 'face', 'y', 'x')
+        ds[var] = dr
+
     for i in range(6):
-        plotting.cs.plot_gridboxes(csgrid_list[i]['lon_b'],csgrid_list[i]['lat_b'], ax, proj)
+        if i+1 in [1, 5]:
+            mask_level = 8
+        elif i+1 == 3:
+            mask_level = 6
+        else:
+            mask_level = 3
+        plotting.cs.plot_gridboxes(csgrid_list[i]['lon_b'],csgrid_list[i]['lat_b'], ax, proj, mask_std=mask_level)
         plotting.cs.plot_facenumber(csgrid_list[i]['lon_b'],csgrid_list[i]['lat_b'], i+1, ax, proj)
+        data = np.log10(ds.SPC_Rn[0, 0, i, ::].values)
+        plotting.cs.plot_data(csgrid_list[i]['lon_b'],csgrid_list[i]['lat_b'], data, ax, proj, vmin=-23, vmax=-18, mask_std=mask_level)
+
     plt.tight_layout()
     plt.show()
     print('Done')
+    #print("done")
+
 
     # x = np.array([0])
     # y = np.array([-90])
